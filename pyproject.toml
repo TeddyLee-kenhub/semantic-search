@@ -1,0 +1,38 @@
+[project]
+name = "kenhub-ai-semantic-search"
+version = "0.1.0"
+description = "Internal semantic search service for Kenhub articles and study units"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.162.0",
+    "httpx==0.28.1",
+    "numpy==2.5.4",
+    "onnxruntime==1.31.1",
+    "tokenizers==0.23.3",
+    "uvicorn[standard]==0.54.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pylint==4.0.5",
+    "pytest==9.0.2",
+]
+eval = [
+    "sentence-transformers==6.2.0",
+    "torch==2.15.0",
+]
+
+[tool.pylint.format]
+max-line-length = 80
+
+[tool.pytest.ini_options]
+pythonpath = "."

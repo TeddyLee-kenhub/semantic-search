@@ -1,0 +1,13 @@
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+.git
+.env
+.env.*
+!.env.example
+data
+models
+tests
+cache/models/bge-m3/
+cache/models/bge-m3-onnx-int8/.cache

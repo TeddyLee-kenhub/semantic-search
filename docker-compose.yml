@@ -1,0 +1,39 @@
+services:
+  semantic-search:
+    build:
+      context: .
+    image: ghcr.io/kenhub/kenhub-ai-semantic-search:latest
+    restart: unless-stopped
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 4
+    network_mode: host
+    environment:
+      APP_HOST: ${APP_HOST:-127.0.0.1}
+      APP_PORT: ${APP_PORT:-8850}
+      MODEL_PATH: /models/bge-m3-int8
+      MEILISEARCH_HOST: ${MEILISEARCH_HOST:-http://127.0.0.1:7700}
+      MEILISEARCH_API_KEY: ${MEILISEARCH_API_KEY:?Set MEILISEARCH_API_KEY}
+      MEILISEARCH_INDEX: ${MEILISEARCH_INDEX:-kenhub_semantic_bge_m3_int8_v3}
+      MEILISEARCH_TIMEOUT: ${MEILISEARCH_TIMEOUT:-10}
+      MEILISEARCH_TASK_TIMEOUT: ${MEILISEARCH_TASK_TIMEOUT:-120}
+      EMBEDDING_MODEL_ID: onnx-community/bge-m3-ONNX@25b9af8e87a38eb120cfe87125383677b9cd309e:int8
+      EMBEDDING_DIMENSION: "1024"
+      MAX_MODEL_TOKENS: ${MAX_MODEL_TOKENS:-2048}
+      MAX_REQUEST_BYTES: "8388608"
+      REQUEST_BODY_IDLE_TIMEOUT: ${REQUEST_BODY_IDLE_TIMEOUT:-10}
+      REQUEST_BODY_TIMEOUT: ${REQUEST_BODY_TIMEOUT:-30}
+      MAX_CONCURRENT_REQUESTS: "2"
+      MAX_SEARCH_CANDIDATES: "100000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; urllib.request.urlopen('http://' + os.environ['APP_HOST'] + ':' + os.environ['APP_PORT'] + '/health/ready', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s

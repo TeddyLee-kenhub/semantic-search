@@ -1,0 +1,381 @@
+openapi: 3.1.0
+info:
+  title: Kenhub Semantic Search API
+  version: 1.0.0
+  description: |
+    Internal API for indexing and semantic search over articles and study
+    units. This service owns embeddings and vector storage; callers own
+    authentication, authorization, and authoritative content records.
+
+    This service does not authenticate callers. Restrict network access to
+    trusted internal Rails and Sidekiq clients; do not expose it publicly.
+    Health endpoints return no configuration or credentials.
+servers:
+  - url: http://semantic-search:8000
+    description: Internal service network
+tags:
+  - name: Health
+  - name: Documents
+  - name: Search
+paths:
+  /health/live:
+    get:
+      operationId: liveness
+      tags: [Health]
+      summary: Check whether the process is alive
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                    example: ok
+  /health/ready:
+    get:
+      operationId: readiness
+      tags: [Health]
+      summary: Check whether the model and vector store are ready
+      description: |
+        Ready only after the local model is loaded and its dimension and
+        persisted schema/model metadata are compatible, and the data store is
+        accessible. An incompatible existing index is not silently rebuilt.
+      security: []
+      responses:
+        "200":
+          description: Model and storage are ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ready
+                    example: ready
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/documents/{type}/{record_id}:
+    parameters:
+      - $ref: "#/components/parameters/ContentType"
+      - $ref: "#/components/parameters/RecordId"
+    put:
+      operationId: replaceDocument
+      tags: [Documents]
+      summary: Replace all indexed chunks for a document
+      description: |
+        Replaces the complete chunk set identified by `(type, record_id)`.
+        An empty `chunks` array clears that document's index. Repeating the
+        same request is idempotent. New embeddings are computed before the
+        active index is changed; an embedding failure leaves the old document
+        searchable. Queries must not observe a mixture of old and new chunks.
+        Updates and deletes for the same document are serialized.
+        Document modifications share a FIFO lock covering embedding and
+        submission; a later delete cannot overtake an earlier replacement.
+
+        Python automatically splits oversized document chunks using its
+        loaded tokenizer. Each resulting substring fits the configured token
+        limit (2048 by default, including special tokens; model ceiling 8192).
+        Original text and order are preserved without truncation or overlap.
+        More than 256 resulting chunks returns 422 before inference or writes,
+        preserving the old document. chunks_count is the actual indexed count.
+        Rails does not need a tokenizer. Queries are not automatically split.
+        The deployment enforces an 8 MiB maximum request body.
+        Invalid JSON or UTF-8 bodies return the 422 invalid_request envelope.
+        Uploads time out after 10 seconds idle or 30 seconds total by default,
+        returning 408 request_timeout and closing the connection. These limits
+        apply only to receiving the body, not embedding or indexing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceDocumentRequest"
+      responses:
+        "200":
+          description: The document's complete chunk set was replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaceDocumentResponse"
+        "408":
+          $ref: "#/components/responses/RequestTimeout"
+        "413":
+          $ref: "#/components/responses/ContentTooLarge"
+        "422":
+          $ref: "#/components/responses/InvalidRequest"
+        "429":
+          $ref: "#/components/responses/Busy"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteDocument
+      tags: [Documents]
+      summary: Delete all indexed chunks for a document
+      description: |
+        Deletes by `(type, record_id)`, independent of slug. Deleting a
+        missing document succeeds. Repeating the request is idempotent.
+        Updates and deletes for the same document are serialized.
+      responses:
+        "408":
+          $ref: "#/components/responses/RequestTimeout"
+        "204":
+          description: The document is absent from the index.
+        "429":
+          $ref: "#/components/responses/Busy"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/search:
+    post:
+      operationId: search
+      tags: [Search]
+      summary: Search indexed articles and study units
+      description: |
+        Filters by locale and requested types as part of vector retrieval,
+        then aggregates chunk matches by `(type, record_id)`. Each content
+        result's score is its best matching chunk's cosine similarity.
+        Results are ordered by score descending. `limit` is the maximum
+        number of distinct content records, not chunks.
+
+        No fixed relevance threshold is applied: unrelated queries may still
+        return their nearest neighbors. An empty index or no matches returns
+        `200` with an empty `results` array. Model or storage failures are
+        errors, never an empty-result fallback.
+        Incomplete uploads return 408 request_timeout after the configured
+        body-read idle or total timeout; the connection is closed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search completed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "408":
+          $ref: "#/components/responses/RequestTimeout"
+        "413":
+          $ref: "#/components/responses/ContentTooLarge"
+        "422":
+          $ref: "#/components/responses/InvalidRequest"
+        "429":
+          $ref: "#/components/responses/Busy"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  parameters:
+    ContentType:
+      name: type
+      in: path
+      required: true
+      description: Indexed content type.
+      schema:
+        type: string
+        enum: [article, study_unit]
+    RecordId:
+      name: record_id
+      in: path
+      required: true
+      description: Rails record ID, represented as a string (integer or UUID).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"
+        example: "123"
+  schemas:
+    ReplaceDocumentRequest:
+      type: object
+      additionalProperties: false
+      required: [locale, slug, chunks]
+      properties:
+        locale:
+          $ref: "#/components/schemas/Locale"
+        slug:
+          type: string
+          maxLength: 512
+          description: Current slug, returned as search metadata; not document identity.
+          example: femur
+        chunks:
+          type: array
+          maxItems: 256
+          description: |
+            Complete ordered chunk list. Empty means remove this document's
+            index. Each input chunk is limited to 16000 Unicode characters.
+            Python splits token-oversized chunks without losing original text.
+            Each resulting chunk fits the configured inference token limit
+            (2048 by default, including special tokens; model ceiling 8192).
+            More than 256 chunks after splitting is rejected with 422 before
+            any inference or index mutation.
+          items:
+            $ref: "#/components/schemas/Chunk"
+    Chunk:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 16000
+          description: Text is embedded without silent truncation.
+    ReplaceDocumentResponse:
+      type: object
+      additionalProperties: false
+      required: [type, record_id, chunks_count]
+      properties:
+        type:
+          type: string
+          enum: [article, study_unit]
+        record_id:
+          type: string
+          example: "123"
+        chunks_count:
+          type: integer
+          minimum: 0
+          maximum: 256
+          description: Actual indexed chunk count after automatic splitting.
+    SearchRequest:
+      type: object
+      additionalProperties: false
+      required: [q, locale]
+      properties:
+        q:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: |
+            Search query; whitespace-only and over-configured-token queries are
+            rejected. The input is never silently truncated.
+          example: "颅骨的结构"
+        locale:
+          $ref: "#/components/schemas/Locale"
+        types:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          default: [article, study_unit]
+          items:
+            type: string
+            enum: [article, study_unit]
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+    SearchResponse:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/SearchResult"
+    SearchResult:
+      type: object
+      additionalProperties: false
+      required: [type, record_id, slug, locale, score]
+      properties:
+        type:
+          type: string
+          enum: [article, study_unit]
+        record_id:
+          type: string
+          description: Rails record ID; use this with type to resolve the record.
+          example: "456"
+        slug:
+          type: string
+          maxLength: 512
+        locale:
+          $ref: "#/components/schemas/Locale"
+        score:
+          type: number
+          minimum: -1
+          maximum: 1
+          description: Cosine similarity of the best matching chunk; higher is better.
+          example: 0.81
+    Locale:
+      type: string
+      enum: [zh, en]
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: invalid_request
+            message:
+              type: string
+              description: Safe diagnostic message; must not contain credentials or document text.
+  responses:
+    RequestTimeout:
+      description: |
+        Request body was not received within the configured idle or total
+        upload timeout (10 and 30 seconds by default). Returns error.code
+        request_timeout; the connection is closed and capacity is released.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ContentTooLarge:
+      description: Request body exceeds the configured 8 MiB limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InvalidRequest:
+      description: Invalid field, locale, content type, or model-token limit exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Busy:
+      description: Inference or write capacity is full; caller may retry with backoff.
+      headers:
+        Retry-After:
+          description: Suggested minimum delay before retrying, in seconds.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected model or storage operation failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: Model or vector storage is not ready.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
